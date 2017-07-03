@@ -1,0 +1,197 @@
+
+//PWM波
+#include "common.h"
+void init(void);
+void KEY_isr();
+void delay();
+void pit0_isr();
+GPIO_InitTypeDef gpio_init_struct;
+UART_InitTypeDef  uart4_init;
+FTM_InitTypeDef ftm_init_struct;
+PIT_InitTypeDef pit0_init;
+int16 Timer,printf_flag;
+uint16 pwm_duty=9000;
+char auto_flag=0,change_flag;
+//auto_flag    由定时器制作呼吸灯标志位,标志位为1时为呼吸灯
+//change_flag  pwm增大或减小标志位
+
+#define LED1 PTC0_O
+#define LED2 PTA17_O
+#define LED3 PTE26_O
+#define LED4 PTD15_O
+#define key1 PTD11_I
+#define key2 PTD12_I
+//按键按下使用调整占空比，同时屏蔽key3,key4功能
+#define key3 PTD13_I//占空比增大按键
+#define key4 PTD14_I//占空比减小按键
+
+void main(void)
+{
+    init();  
+    LPLD_PIT_EnableIrq(pit0_init);
+    while(1)
+    {
+      if(printf_flag==1)
+      {
+        printf("占空比增大，PWM占空比=%d%%\n",pwm_duty/100);//注意这里是整型
+        printf_flag=0;
+      }
+      if(printf_flag==2)
+      {
+        printf("占空比减小，PWM占空比=%d%%\n",pwm_duty/100);
+         printf_flag=0;
+      }
+      if(printf_flag==3)
+      {
+        printf("呼吸灯模式开启\n");
+         printf_flag=0;
+      }
+        
+    }
+}
+
+   //初始化GPIO
+void init(void)
+{
+      //PTD按键中断
+      gpio_init_struct.GPIO_PTx  = PTD;
+      gpio_init_struct.GPIO_Pins  = GPIO_Pin11|GPIO_Pin12|GPIO_Pin13|GPIO_Pin14;
+      gpio_init_struct.GPIO_Dir  = DIR_INPUT;
+      gpio_init_struct.GPIO_PinControl = INPUT_PULL_UP|IRQC_FA ;//内部上拉，上升沿中断
+      gpio_init_struct.GPIO_Isr   = KEY_isr;
+      LPLD_GPIO_Init(gpio_init_struct);
+      LPLD_GPIO_EnableIrq(gpio_init_struct);
+      
+      
+      
+      gpio_init_struct.GPIO_PTx = PTA;                  
+      gpio_init_struct.GPIO_Pins = GPIO_Pin17;
+      gpio_init_struct.GPIO_Dir = DIR_OUTPUT;           
+      gpio_init_struct.GPIO_Output = OUTPUT_H;          
+      gpio_init_struct.GPIO_PinControl = IRQC_DIS;      
+      LPLD_GPIO_Init(gpio_init_struct);   
+      
+      gpio_init_struct.GPIO_PTx = PTC;                  
+      gpio_init_struct.GPIO_Pins = GPIO_Pin0;
+      gpio_init_struct.GPIO_Dir = DIR_OUTPUT;           
+      gpio_init_struct.GPIO_Output = OUTPUT_H;          
+      gpio_init_struct.GPIO_PinControl = IRQC_DIS;      
+      LPLD_GPIO_Init(gpio_init_struct); 
+      
+      gpio_init_struct.GPIO_PTx = PTD;                  
+      gpio_init_struct.GPIO_Pins = GPIO_Pin15;
+      gpio_init_struct.GPIO_Dir = DIR_OUTPUT;           
+      gpio_init_struct.GPIO_Output = OUTPUT_H;          
+      gpio_init_struct.GPIO_PinControl = IRQC_DIS;      
+      LPLD_GPIO_Init(gpio_init_struct);   
+      
+      gpio_init_struct.GPIO_PTx = PTE;                  
+      gpio_init_struct.GPIO_Pins = GPIO_Pin26;
+      gpio_init_struct.GPIO_Dir = DIR_OUTPUT;           
+      gpio_init_struct.GPIO_Output = OUTPUT_H;          
+      gpio_init_struct.GPIO_PinControl = IRQC_DIS;      
+      LPLD_GPIO_Init(gpio_init_struct); 
+      
+      //UART4初始化
+     uart4_init.UART_Uartx  = UART4;
+     uart4_init.UART_RxIntEnable = 9600;
+     uart4_init.UART_RxPin  = PTE25;
+     uart4_init.UART_TxPin = PTE24;
+     LPLD_UART_Init(uart4_init);
+     
+     pit0_init.PIT_Pitx   =  PIT0;
+     pit0_init.PIT_PeriodMs = 20;
+     pit0_init.PIT_Isr    = pit0_isr;
+     LPLD_PIT_Init(pit0_init);
+     
+      //FTM0通道
+      ftm_init_struct.FTM_Ftmx = FTM0;	//使能FTM0通道
+      ftm_init_struct.FTM_Mode = FTM_MODE_PWM;	//使能PWM模式
+      ftm_init_struct.FTM_PwmFreq = 5000;	//PWM频率5000Hz
+      LPLD_FTM_Init(ftm_init_struct);
+      LPLD_FTM_PWM_Enable(FTM0, FTM_Ch1, pwm_duty, PTA4, ALIGN_LEFT    );     
+      //使用FTM0 //使能Ch0通道//初始化占空比 =pwm_duty/10000*100%
+      //使用Ch0通道的PTC1引脚 //脉宽左对齐
+      LPLD_FTM_PWM_Enable(FTM0,FTM_Ch2, 0, PTA5, ALIGN_LEFT );
+      //使用FTM0//使能Ch0通道//初始化占空比 =0//脉宽左对齐
+                  
+}
+
+
+void pit0_isr()
+{
+  if(auto_flag)//标志位为1时表示为呼吸灯状态
+  {
+  //加上60%死区电压
+  if(!change_flag&&pwm_duty>=6000)//标志位为0时使占空比减小
+  {                             
+    //注意不要使pwm_duty<0 
+      pwm_duty-=40;
+    LPLD_FTM_PWM_ChangeDuty(FTM0,FTM_Ch1,pwm_duty);
+  }
+  else
+    change_flag=1;//当减小到最小时，切换加状态
+
+  
+  if(change_flag&&pwm_duty<=9960)
+  {
+    //注意不要使pwm_duty>10000
+      pwm_duty+=40;
+    LPLD_FTM_PWM_ChangeDuty(FTM0,FTM_Ch1,pwm_duty);
+  }
+  else 
+  change_flag=0;//当增大到最大时，切换减状态
+ }
+}
+
+
+
+
+void KEY_isr()
+{
+  delay();
+  if(!key2)
+  {
+    auto_flag=~auto_flag;//按键2按下标志位置取反
+  }
+  
+  if(!auto_flag)//标志位为0时,由按键控制加减占空比
+  { 
+    if(!key3)
+    {
+      printf_flag=1;
+      if(pwm_duty>9700)
+        pwm_duty=1000;
+        pwm_duty+=300;
+        LPLD_FTM_PWM_ChangeDuty(FTM0,FTM_Ch1,pwm_duty);
+    }
+  
+    if(!key4)
+    {
+      printf_flag=2;
+      if(pwm_duty<300)//这个判断需要在减法前面
+       pwm_duty=10300;
+      pwm_duty-=300;
+      LPLD_FTM_PWM_ChangeDuty(FTM0,FTM_Ch1,pwm_duty);
+     }
+   }
+ else  printf_flag=3;
+}
+
+
+
+void delay()
+{
+  uint16 i, n;
+  for(i=0;i<15000;i++)
+  {
+    for(n=0;n<50;n++)
+    {
+      asm("nop");
+    }
+  }
+  
+}
+
+
+
